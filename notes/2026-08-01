@@ -1,0 +1,146 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+# -------------------- 超参数 --------------------
+HIDDEN_SIZE = 64
+N_LAYER = 1
+SEQ_LEN = 500          # 用前50个点作为输入
+PREDICT_STEPS = 3000   # 递归预测未来200个点
+BATCH_SIZE = 64
+EPOCHS = 100
+LEARNING_RATE = 0.001
+
+# 固定随机种子方便复现
+torch.manual_seed(42)
+np.random.seed(42)
+
+# -------------------- 生成正弦波数据 --------------------
+total_points = 5000
+x = np.linspace(0, 20 * np.pi, total_points)  # 10个完整周期
+y = np.sin(x) + 0.05 * np.random.randn(total_points)  # 加少量噪声
+
+# 归一化到 [-1, 1]（正弦波已经在此范围）
+plt.figure(figsize=(15, 4))
+plt.plot(y[:300])
+plt.title("原始正弦波序列（前300点）")
+plt.show()
+
+# -------------------- 构建数据集（滑动窗口） --------------------
+def create_sequences(data, seq_len):
+    xs, ys = [], []
+    for i in range(len(data) - seq_len - 1):
+        xs.append(data[i:i+seq_len])
+        ys.append(data[i+seq_len])   # 预测下一个点
+    return np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)
+
+X, Y = create_sequences(y, SEQ_LEN)
+# 划分训练集和测试集（80% 训练，20% 测试）
+split = int(0.8 * len(X))
+X_train, Y_train = X[:split], Y[:split]
+X_test, Y_test = X[split:], Y[split:]
+
+# 转换为 PyTorch 张量
+X_train_t = torch.tensor(X_train).unsqueeze(-1)  # (样本数, seq_len, 1)
+Y_train_t = torch.tensor(Y_train).unsqueeze(-1)
+X_test_t = torch.tensor(X_test).unsqueeze(-1)
+Y_test_t = torch.tensor(Y_test).unsqueeze(-1)
+
+print(f"训练样本: {X_train.shape[0]}, 测试样本: {X_test.shape[0]}")
+
+# 创建 DataLoader
+from torch.utils.data import TensorDataset, DataLoader
+train_dataset = TensorDataset(X_train_t, Y_train_t)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+# -------------------- 定义普通 RNN 模型（非 LSTM/GRU） --------------------
+class VanillaRNN(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        super(VanillaRNN, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        # 关键：使用普通 RNN（默认 tanh 激活），极易梯度消失
+        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        # x: (batch, seq_len, input_size)
+        out, _ = self.rnn(x)   # out: (batch, seq_len, hidden_size)
+        # 只取最后一个时间步的输出
+        out = out[:, -1, :]    # (batch, hidden_size)
+        out = self.fc(out)     # (batch, output_size)
+        return out
+
+model = VanillaRNN(input_size=1, hidden_size=HIDDEN_SIZE, 
+                   output_size=1, num_layers=N_LAYER)
+
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+print("模型参数量:", sum(p.numel() for p in model.parameters()))
+
+# -------------------- 训练循环（固定学习率，无调度器） --------------------
+print("开始训练普通 RNN...")
+start_time = time.time()
+
+train_losses = []
+for epoch in range(1, EPOCHS + 1):
+    model.train()
+    epoch_loss = 0.0
+    for batch_x, batch_y in train_loader:
+        optimizer.zero_grad()
+        pred = model(batch_x)
+        loss = criterion(pred, batch_y)
+        loss.backward()
+        # 为防止显式爆炸，可以打印梯度范数，但这里保留原样让崩溃自然发生
+        optimizer.step()
+        epoch_loss += loss.item() * batch_x.size(0)
+    
+    avg_loss = epoch_loss / len(X_train)
+    train_losses.append(avg_loss)
+    
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch:3d}/{EPOCHS}, Loss: {avg_loss:.6f}")
+
+print(f"训练完成，耗时 {time.time() - start_time:.2f} 秒")
+
+# -------------------- 递归预测未来（展现崩溃） --------------------
+model.eval()
+# 取测试集最后一个序列作为初始输入（即序列的最后 SEQ_LEN 个点）
+last_seq = torch.tensor(y[-SEQ_LEN:], dtype=torch.float32).unsqueeze(0).unsqueeze(-1)  # (1, SEQ_LEN, 1)
+
+predicted = []
+current_seq = last_seq.clone()
+with torch.no_grad():
+    for step in range(PREDICT_STEPS):
+        next_val = model(current_seq)          # (1, 1)
+        predicted.append(next_val.item())
+        # 滑动窗口：去掉第一个点，加入预测点
+        current_seq = torch.cat([current_seq[:, 1:, :], next_val.unsqueeze(1)], dim=1)
+
+# -------------------- 绘制结果（展示崩溃） --------------------
+plt.figure(figsize=(15, 6))
+
+# 真实值（未来 200 个点）
+true_future = y[-SEQ_LEN - PREDICT_STEPS:]  # 包含初始SEQ_LEN + 预测步数
+true_future = true_future[-PREDICT_STEPS:]  # 只取预测的部分
+
+# 绘图
+plt.plot(range(PREDICT_STEPS), true_future, label='真实正弦波', color='green', linewidth=2)
+plt.plot(range(PREDICT_STEPS), predicted, label='普通RNN预测 (长期依赖崩溃)', color='red', linestyle='--', linewidth=2)
+
+plt.xlabel('预测步数')
+plt.ylabel('值')
+plt.title('普通 RNN 在长序列预测中的崩溃现象\n（梯度消失导致预测趋于常数或振荡）')
+plt.legend()
+plt.grid(True)
+
+# 放大显示前一部分和崩溃部分
+plt.show()
+
+# 打印统计信息
+print(f"\n真实值均值: {np.mean(true_future):.4f}, 标准差: {np.std(true_future):.4f}")
+print(f"预测值均值: {np.mean(predicted):.4f}, 标准差: {np.std(predicted):.4f}")
+print("注意：普通RNN预测值严重偏离真实分布，这是因为梯度消失导致无法捕获长期依赖。")
