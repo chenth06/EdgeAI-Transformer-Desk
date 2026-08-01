@@ -8,8 +8,8 @@ import time
 # -------------------- 超参数 --------------------
 HIDDEN_SIZE = 64
 N_LAYER = 1
-SEQ_LEN = 500          # 用前50个点作为输入
-PREDICT_STEPS = 3000   # 递归预测未来200个点
+SEQ_LEN = 500          # 用前500个点作为输入
+PREDICT_STEPS = 3000   # 递归预测未来3000个点
 BATCH_SIZE = 64
 EPOCHS = 100
 LEARNING_RATE = 0.001
