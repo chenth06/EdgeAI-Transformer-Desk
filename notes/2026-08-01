@@ -1,3 +1,4 @@
+这是一个简单的正弦波预测网络，在运行他的过程中，发现了其中明显的预测不准确问题，可能是由于RNN对于较长步长，容易出现梯度消失导致，昭示了RNN在处理复杂任务上的显著问题，LSTM与GRU也无法很好的解决
 import torch
 import torch.nn as nn
 import numpy as np
